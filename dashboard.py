@@ -1,18 +1,25 @@
 import streamlit as st
 import pandas as pd
 import snowflake.connector
+from dotenv import load_dotenv
 from sqlalchemy import create_engine
 
-# Conexão Snowflake
+import os
+
+# Carrega variáveis do arquivo .env
+load_dotenv()
+
+# Conexão Snowflake usando variáveis de ambiente
 conn = snowflake.connector.connect(
-    user='ANALISE@DROGARIASBRASIL.COM',
-    password='a8Cupdl',
-    account='SNDWJLU-DATASHARE',
-    warehouse='WH_PROVEDOR_DROGARIA_BRASIL',
-    role="RL_PROVEDOR_DROGARIA_BRASIL",
-    database='DS_DROGARIA_BRASIL_BR',
-    schema="DEMANDA",
+    user=os.getenv('SNOWFLAKE_USER'),
+    password=os.getenv('SNOWFLAKE_PASSWORD'),
+    account=os.getenv('SNOWFLAKE_ACCOUNT'),
+    warehouse=os.getenv('SNOWFLAKE_WAREHOUSE'),
+    role=os.getenv('SNOWFLAKE_ROLE'),
+    database=os.getenv('SNOWFLAKE_DATABASE'),
+    schema=os.getenv('SNOWFLAKE_SCHEMA'),
 )
+
 
 engine = create_engine('snowflake://', creator=lambda: conn)
 
@@ -129,6 +136,40 @@ def N(valor):
     except:
         return "0"
 
+
+def calcular_potencial_realista(df_oportunidades, seu_faturamento):
+    """
+    Calcula potencial de compra realista considerando:
+    - Penetração de mercado (70%)
+    - Capacidade financeira (20% do faturamento)
+    - Foco nos melhores produtos (Top 50)
+    """
+    if df_oportunidades.empty:
+        return 0, 0, 0, 0
+    
+    # 1. Potencial bruto (como está hoje)
+    potencial_bruto = df_oportunidades['faturamento'].sum()
+    
+    # 2. Ajuste por penetração de mercado (70%)
+    potencial_penetracao = potencial_bruto * 0.70
+    
+    # 3. Limite por capacidade financeira (20% do seu faturamento)
+    capacidade_max = seu_faturamento * 0.20
+    
+    # 4. Seleciona produtos mais relevantes (Top 50 por faturamento)
+    df_top = df_oportunidades.nlargest(50, 'faturamento')
+    potencial_top50 = df_top['faturamento'].sum() * 0.70
+    
+    # 5. Potencial final = mínimo entre os ajustes
+    potencial_final = min(potencial_top50, capacidade_max)
+    
+    # 6. Quantos produtos cabem no orçamento
+    df_ordenado = df_oportunidades.sort_values('faturamento', ascending=False)
+    df_cabivel = df_ordenado[df_ordenado['faturamento'].cumsum() <= capacidade_max]
+    produtos_cabiveis = len(df_cabivel)
+    
+    return potencial_bruto, potencial_penetracao, potencial_final, produtos_cabiveis
+
 # ========== SIDEBAR ==========
 st.sidebar.title("⚙️ Filtros")
 
@@ -146,7 +187,8 @@ if varejo_selecionado != 'TODOS':
 else:
     media_outros = df_resumo['faturamento'].mean() if not df_resumo.empty else 0
 
-potencial = df_oportunidades['faturamento'].sum() if not df_oportunidades.empty else 0
+potencial_bruto, potencial_penetracao, potencial_final, produtos_cabiveis = calcular_potencial_realista(df_oportunidades, seu_fat)
+potencial = potencial_final
 
 with col1:
     st.metric("Seu Faturamento", R1(seu_fat))
@@ -157,7 +199,19 @@ with col2:
              delta=R1(seu_fat - media_outros) if seu_fat and media_outros else None)
 
 with col3:
-    st.metric("Potencial de Compra", R1(potencial))
+   with col3:
+    st.metric(
+        "Potencial de Compra", 
+        R1(potencial),
+        delta=f"{((potencial/seu_fat)*100):.1f}% do faturamento" if seu_fat > 0 else None,
+        help=f"""
+        Potencial realista considerando:
+        • 70% de penetração de mercado
+        • Limite de 20% do faturamento (R$ {seu_fat * 0.20:,.2f})
+        • Top 50 produtos mais relevantes
+        • {produtos_cabiveis} produtos cabem no orçamento
+        """
+    )
 
 # ========== TABS ==========
 tab1, tab2, tab3 = st.tabs(["🛍️ O QUE COMPRAR", "📊 POR SEÇÃO", "🏪 POR VAREJO"])
