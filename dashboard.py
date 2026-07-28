@@ -23,7 +23,7 @@ engine = create_engine('snowflake://', creator=lambda: conn)
 
 st.set_page_config(page_title="O que Comprar - DROGARIA BRASIL", layout="wide")
 
-st.title("🛒 O que Comprar para Melhorar as Vendas")
+st.title("O que Comprar para Melhorar as Vendas")
 st.markdown("**DROGARIA BRASIL** | Comparação por varejos")
 
 SUA_FARMACIA = "DROGARIA BRASIL"
@@ -34,20 +34,20 @@ def carregar_periodos():
     query_periodos = """
         SELECT DISTINCT "PER_MES" AS periodo
         FROM REPORT_INFORMANTE_E_MERCADO
-        ORDER BY periodo DESC
+        ORDER BY periodo ASC
     """
     df_periodos = pd.read_sql(query_periodos, engine)
     return df_periodos
 
 @st.cache_data(ttl=3600)
-def carregar_dados(periodo_selecionado):
-    """Carrega todos os dados com ou sem filtro de período"""
+def carregar_dados(periodo_inicio, periodo_fim):
+    """Carrega todos os dados com filtro de período (de/até)"""
     
     # Define filtro de período
-    if periodo_selecionado == 'TODOS':
+    if periodo_inicio == 'TODOS' or periodo_fim == 'TODOS':
         filtro_periodo = ""
     else:
-        filtro_periodo = f"AND \"PER_MES\" = '{periodo_selecionado}'"
+        filtro_periodo = f"AND \"PER_MES\" BETWEEN '{periodo_inicio}' AND '{periodo_fim}'"
     
     # 1. Resumo por varejo
     query_resumo = f"""
@@ -216,18 +216,53 @@ def calcular_potencial_realista(df_oportunidades, seu_faturamento):
 # ========== SIDEBAR ==========
 st.sidebar.title("⚙️ Filtros")
 
-# Filtro de período com opção TODOS
-periodos_lista = ['TODOS'] + df_periodos['periodo'].tolist()
-periodo_selecionado = st.sidebar.selectbox(
-    "📅 Período:",
-    periodos_lista,
-    format_func=formatar_periodo,
-    help="Selecione o mês/ano ou Todos para análise completa"
-)
+# Filtro de período DE/ATÉ
+st.sidebar.subheader("📅 Período")
+
+col_de, col_ate = st.sidebar.columns(2)
+
+with col_de:
+    periodo_de = st.selectbox(
+        "De:",
+        ['TODOS'] + df_periodos['periodo'].tolist(),
+        format_func=formatar_periodo,
+        key='periodo_de'
+    )
+
+with col_ate:
+    # Se selecionou TODOS no "De", desabilita o "Até"
+    if periodo_de == 'TODOS':
+        periodo_ate = st.selectbox(
+            "Até:",
+            ['TODOS'],
+            disabled=True,
+            key='periodo_ate_disabled'
+        )
+    else:
+        # Filtra períodos a partir do "De"
+        periodos_ate = df_periodos[df_periodos['periodo'] >= periodo_de]['periodo'].tolist()
+        periodo_ate = st.selectbox(
+            "Até:",
+            periodos_ate,
+            format_func=formatar_periodo,
+            key='periodo_ate'
+        )
 
 # Carregar dados com o período selecionado
-df_resumo, df_seu, df_oportunidades, df_suas_secoes, df_outras_secoes, df_varejos, df_top_produtos = carregar_dados(periodo_selecionado)
+if periodo_de == 'TODOS':
+    df_resumo, df_seu, df_oportunidades, df_suas_secoes, df_outras_secoes, df_varejos, df_top_produtos = carregar_dados('TODOS', 'TODOS')
+else:
+    df_resumo, df_seu, df_oportunidades, df_suas_secoes, df_outras_secoes, df_varejos, df_top_produtos = carregar_dados(periodo_de, periodo_ate)
 
+# Mostrar período selecionado
+if periodo_de == 'TODOS':
+    st.sidebar.caption("📅 Todos os períodos")
+else:
+    st.sidebar.caption(f"📅 {formatar_periodo(periodo_de)} até {formatar_periodo(periodo_ate)}")
+
+st.sidebar.markdown("---")
+
+# Filtro de varejo
 varejos_lista = ['Todos'] + df_varejos['varejo'].tolist()
 varejo_selecionado = st.sidebar.selectbox(
     "🏪 Comparar com:",
@@ -241,28 +276,11 @@ seu_fat = df_seu['faturamento'].iloc[0] if not df_seu.empty and not pd.isna(df_s
 seus_produtos = df_seu['produtos'].iloc[0] if not df_seu.empty else 0
 suas_unidades = df_seu['unidades'].iloc[0] if not df_seu.empty else 0
 
-st.sidebar.metric(
-    "Faturamento", 
-    R1(seu_fat),
-    help=f"Soma de VAL_R$ no período: {formatar_periodo(periodo_selecionado)}"
-)
-
-st.sidebar.metric(
-    "Produtos", 
-    N(seus_produtos),
-    help=f"Produtos distintos vendidos: {formatar_periodo(periodo_selecionado)}"
-)
-
-st.sidebar.metric(
-    "Unidades", 
-    N(suas_unidades),
-    help=f"Total de unidades vendidas: {formatar_periodo(periodo_selecionado)}"
-)
+st.sidebar.metric("Faturamento", R1(seu_fat))
+st.sidebar.metric("Produtos", N(seus_produtos))
+st.sidebar.metric("Unidades", N(suas_unidades))
 
 # ========== CARDS PRINCIPAIS ==========
-st.markdown(f"### 📅 Período: {formatar_periodo(periodo_selecionado)}")
-st.markdown("---")
-
 col1, col2, col3 = st.columns(3)
 
 if varejo_selecionado != 'Todos':
@@ -273,65 +291,22 @@ else:
 potencial_bruto, potencial_penetracao, potencial_final, produtos_cabiveis = calcular_potencial_realista(df_oportunidades, seu_fat)
 
 with col1:
-    st.metric(
-        "💰 Seu Faturamento", 
-        R1(seu_fat),
-        help=f"""
-        **Fórmula:**  
-        Soma de VAL_R$  
-        WHERE INF_DESC = '{SUA_FARMACIA}'  
-        Período: {formatar_periodo(periodo_selecionado)}
-        """
-    )
+    st.metric("Seu Faturamento", R1(seu_fat))
 
 with col2:
-    label = f"🏪 {varejo_selecionado}" if varejo_selecionado != 'Todos' else "🏪 Média Varejos"
+    label = f"{varejo_selecionado}" if varejo_selecionado != 'Todos' else "Média Varejos"
     diferenca = seu_fat - media_outros
-    
-    if varejo_selecionado != 'Todos':
-        help_text = f"""
-        **Fórmula:**  
-        Soma de VAL_R$  
-        WHERE UTC_DESC_VAREJO = '{varejo_selecionado}'  
-        Período: {formatar_periodo(periodo_selecionado)}
-        """
-    else:
-        help_text = f"""
-        **Fórmula:**  
-        Média de VAL_R$ de todos varejos  
-        Período: {formatar_periodo(periodo_selecionado)}  
-        ({len(df_varejos)} varejos considerados)
-        """
-    
     st.metric(
         label, 
         R1(media_outros),
-        delta=f"{'🔴' if diferenca < 0 else '🟢'} {R1(abs(diferenca))}" if seu_fat and media_outros else None,
-        help=help_text
+        delta=f"{'🔴' if diferenca < 0 else '🟢'} {R1(abs(diferenca))}" if seu_fat and media_outros else None
     )
 
 with col3:
     st.metric(
-        "💡 Potencial Realista",
+        "Potencial Realista",
         R1(potencial_final),
-        delta=f"📦 {produtos_cabiveis} produtos",
-        help=f"""
-        **Fórmula passo a passo:**  
-        
-        1️⃣ **Potencial Bruto:** {R1(potencial_bruto)}  
-        Soma de todo faturamento dos produtos ausentes
-        
-        2️⃣ **Com Penetração (70%):** {R1(potencial_penetracao)}  
-        {R1(potencial_bruto)} × 0.70  
-        (assume alcance de 70% do mercado)
-        
-        3️⃣ **Capacidade Máxima (20%):** {R1(seu_fat * 0.20)}  
-        {R1(seu_fat)} × 0.20  
-        (orçamento limitado a 20% do faturamento)
-        
-        4️⃣ **Resultado Final:** {R1(potencial_final)}  
-        Menor valor entre (70% do Top 50) e (20% do seu faturamento)
-        """
+        delta=f"📦 {produtos_cabiveis} produtos"
     )
 
 # ========== TABS ==========
@@ -351,8 +326,7 @@ with tab1:
             marcas = ['Todas'] + sorted(df_oportunidades['marca'].dropna().unique().tolist())
             marca_filtro = st.selectbox("Marca", marcas, key='marca_op')
         with col3:
-            min_varejos = st.number_input("Mín. Varejos", 1, 50, 1,
-                help="Filtra produtos vendidos por pelo menos X varejos diferentes")
+            min_varejos = st.number_input("Mín. Varejos", 1, 50, 1)
         
         df = df_oportunidades.copy()
         if secao_filtro != 'Todas':
@@ -371,40 +345,14 @@ with tab1:
             df_show[['produto', 'marca', 'secao', 'Faturamento', 'Unidades', 'Preço Médio', 'Varejos']],
             use_container_width=True,
             hide_index=True,
-            height=500,
-            column_config={
-                'Preço Médio': st.column_config.TextColumn(
-                    'Preço Médio', 
-                    help='Faturamento Total ÷ Unidades Vendidas = Preço unitário médio'
-                ),
-                'Faturamento': st.column_config.TextColumn(
-                    'Faturamento',
-                    help='Soma de VAL_R$ para este produto em todos os varejos'
-                ),
-                'Unidades': st.column_config.TextColumn(
-                    'Unidades',
-                    help='Soma de VAL_UND (quantidade total vendida)'
-                ),
-                'Varejos': st.column_config.TextColumn(
-                    'Varejos',
-                    help='Quantos varejos diferentes vendem este produto'
-                )
-            }
+            height=500
         )
         
         col1, col2 = st.columns(2)
         with col1:
-            st.metric(
-                "Total de Oportunidades", 
-                N(len(df)),
-                help="Quantidade de produtos encontrados com os filtros atuais"
-            )
+            st.metric("Total de Oportunidades", N(len(df)))
         with col2:
-            st.metric(
-                "Faturamento Total Filtrado", 
-                R1(df['faturamento'].sum()),
-                help="Soma do faturamento de todos os produtos listados acima"
-            )
+            st.metric("Faturamento Total Filtrado", R1(df['faturamento'].sum()))
         
         csv = df.to_csv(index=False).encode('utf-8')
         st.download_button("📥 Baixar Lista Filtrada", csv, "produtos_para_comprar.csv")
@@ -438,25 +386,7 @@ with tab2:
             df_show_secoes[['secao', 'Seu Faturamento', 'Faturamento Outros', 'Oportunidade (R$)', 'Oportunidade (%)', 'Seus Produtos', 'Produtos Outros']],
             use_container_width=True,
             hide_index=True,
-            height=500,
-            column_config={
-                'Oportunidade (R$)': st.column_config.TextColumn(
-                    'Oportunidade (R$)',
-                    help='Faturamento Outros - Seu Faturamento = Valor que deixou de ganhar'
-                ),
-                'Oportunidade (%)': st.column_config.TextColumn(
-                    'Oportunidade (%)',
-                    help='(Faturamento Outros - Seu Faturamento) ÷ Faturamento Outros × 100 = % de oportunidade'
-                ),
-                'Seus Produtos': st.column_config.TextColumn(
-                    'Seus Produtos',
-                    help='Quantos produtos diferentes você vende nesta seção'
-                ),
-                'Produtos Outros': st.column_config.TextColumn(
-                    'Produtos Outros',
-                    help='Quantos produtos diferentes os outros vendem nesta seção'
-                )
-            }
+            height=500
         )
 
 with tab3:
@@ -477,56 +407,22 @@ with tab3:
             df_show_varejos[['varejo', 'Faturamento', 'Produtos', 'Unidades', 'Diferença']],
             use_container_width=True,
             hide_index=True,
-            height=500,
-            column_config={
-                'Faturamento': st.column_config.TextColumn(
-                    'Faturamento',
-                    help=f'Soma de VAL_R$ - Período: {formatar_periodo(periodo_selecionado)}'
-                ),
-                'Produtos': st.column_config.TextColumn(
-                    'Produtos',
-                    help='Quantidade de produtos diferentes vendidos'
-                ),
-                'Unidades': st.column_config.TextColumn(
-                    'Unidades',
-                    help='Quantidade total de unidades vendidas'
-                ),
-                'Diferença': st.column_config.TextColumn(
-                    'Diferença',
-                    help='Seu Faturamento - Faturamento do Varejo (🟢 você maior, 🔴 você menor)'
-                )
-            }
+            height=500
         )
         
         acima = len(df_resumo[df_resumo['faturamento'] > seu_fat])
         abaixo = len(df_resumo[df_resumo['faturamento'] < seu_fat])
-        empatado = len(df_resumo[df_resumo['faturamento'] == seu_fat])
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
-            st.metric(
-                "🔴 Maiores que você", 
-                N(acima),
-                help="Varejos com faturamento total MAIOR que o seu"
-            )
+            st.metric("🔴 Maiores que você", N(acima))
         with col2:
-            st.metric(
-                "🟢 Menores que você", 
-                N(abaixo),
-                help="Varejos com faturamento total MENOR que o seu"
-            )
-        with col3:
-            st.metric(
-                "⚪ Empate", 
-                N(empatado),
-                help="Varejos com faturamento IGUAL ao seu"
-            )
+            st.metric("🟢 Menores que você", N(abaixo))
         
         todos_fat = pd.concat([pd.DataFrame({'varejo': ['DROGARIA BRASIL'], 'faturamento': [seu_fat]}), 
                                df_resumo[['varejo', 'faturamento']]])
         todos_fat = todos_fat.sort_values('faturamento', ascending=False).reset_index(drop=True)
         sua_posicao = todos_fat[todos_fat['varejo'] == 'DROGARIA BRASIL'].index[0] + 1
-        
         st.info(f"🏆 Sua posição no ranking: **{sua_posicao}º** de {len(todos_fat)} varejos")
 
 with tab4:
@@ -544,27 +440,15 @@ with tab4:
             df_show_top[['produto', 'Faturamento', 'Unidades', 'Preço Médio']],
             use_container_width=True,
             hide_index=True,
-            height=400,
-            column_config={
-                'Faturamento': st.column_config.TextColumn(
-                    'Faturamento',
-                    help=f'Soma de VAL_R$ - Período: {formatar_periodo(periodo_selecionado)}'
-                ),
-                'Unidades': st.column_config.TextColumn(
-                    'Unidades',
-                    help='Soma de VAL_UND (quantidade vendida)'
-                ),
-                'Preço Médio': st.column_config.TextColumn(
-                    'Preço Médio',
-                    help='Faturamento ÷ Unidades = Preço unitário médio'
-                )
-            }
+            height=400
         )
         
-        st.caption("💡 Compare com a aba 'O QUE COMPRAR' para ver produtos complementares")
+        st.caption("Compare com a aba 'O QUE COMPRAR' para ver produtos complementares")
 
 st.markdown("---")
-st.caption(f"Período: {formatar_periodo(periodo_selecionado)} | Fonte: REPORT_INFORMANTE_E_MERCADO | Schema: DEMANDA")
-st.caption(f"Total de períodos disponíveis: {len(df_periodos)}")
+if periodo_de == 'TODOS':
+    st.caption("Período: Todos | Fonte: REPORT_INFORMANTE_E_MERCADO")
+else:
+    st.caption(f"Período: {formatar_periodo(periodo_de)} até {formatar_periodo(periodo_ate)} | Fonte: REPORT_INFORMANTE_E_MERCADO")
 
 conn.close()
